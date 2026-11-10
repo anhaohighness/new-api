@@ -77,6 +77,12 @@ const prices: PricingSyncModels = {
     },
   },
 }
+const paginatedPrices: PricingSyncModels = Object.fromEntries(
+  Array.from({ length: 12 }, (_, index) => [
+    `model-${String(index + 1).padStart(2, '0')}`,
+    prices.m,
+  ])
+)
 function TableFixture(props: { prices: PricingSyncModels }) {
   const [selectedSources, setSelectedSources] =
     useState<PricingSourceSelections>({})
@@ -289,6 +295,104 @@ describe('pricing synchronization', () => {
       screen.getByRole('checkbox', { name: 'Select price for m from upstream' })
     ).not.toBeChecked()
   })
+
+  it.each(['desktop', 'mobile'])(
+    'keeps the current page when toggling individual and source-wide selections on %s',
+    async (layout) => {
+      if (layout === 'mobile') {
+        const original = window.matchMedia
+        vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+          ...original(query),
+          matches: query === '(max-width: 640px)',
+        }))
+      }
+      const user = userEvent.setup()
+      render(<TableFixture prices={paginatedPrices} />)
+      await user.click(screen.getByRole('button', { name: 'Go to next page' }))
+      expect(screen.getByText('model-11')).toBeVisible()
+
+      const rowSelection = screen.getByRole('checkbox', {
+        name: 'Select price for model-11 from upstream',
+      })
+      await user.click(rowSelection)
+      expect(
+        screen.getByRole('checkbox', {
+          name: 'Select price for model-11 from upstream',
+        })
+      ).toBeChecked()
+      await user.click(rowSelection)
+      expect(rowSelection).not.toBeChecked()
+
+      const sourceSelection = screen.getByRole('checkbox', {
+        name: 'Select all prices from upstream',
+      })
+      await user.click(sourceSelection)
+      expect(
+        screen.getByRole('checkbox', {
+          name: 'Select price for model-12 from upstream',
+        })
+      ).toBeChecked()
+      await user.click(sourceSelection)
+      expect(rowSelection).not.toBeChecked()
+      expect(screen.getByText('model-11')).toBeVisible()
+      expect(screen.queryByText('model-01')).not.toBeInTheDocument()
+    }
+  )
+
+  it.each(['search', 'billing mode', 'matching prices'])(
+    'returns to the first page when changing the %s filter',
+    async (filter) => {
+      const user = userEvent.setup()
+      render(<TableFixture prices={paginatedPrices} />)
+      await user.click(screen.getByRole('button', { name: 'Go to next page' }))
+      expect(screen.getByText('model-11')).toBeVisible()
+
+      if (filter === 'search') {
+        await user.type(
+          screen.getByRole('textbox', { name: 'Search models' }),
+          'model-01'
+        )
+      } else if (filter === 'billing mode') {
+        await user.click(screen.getByRole('combobox', { name: 'Billing Mode' }))
+        await user.click(screen.getByRole('option', { name: 'Per-token' }))
+      } else {
+        await user.click(
+          screen.getByRole('checkbox', {
+            name: 'Show models with matching prices',
+          })
+        )
+      }
+
+      expect(await screen.findByText('model-01')).toBeVisible()
+      expect(
+        screen.getByRole('button', { name: 'Go to previous page' })
+      ).toBeDisabled()
+    }
+  )
+
+  it.each([
+    { result: 'one model', refreshedPrices: prices, expected: 'm' },
+    {
+      result: 'no models',
+      refreshedPrices: {},
+      expected: 'No upstream price differences found',
+    },
+  ])(
+    'shows an available page when refreshed prices have $result',
+    async ({ refreshedPrices, expected }) => {
+      const user = userEvent.setup()
+      const view = render(<TableFixture prices={paginatedPrices} />)
+      await user.click(screen.getByRole('button', { name: 'Go to next page' }))
+      expect(screen.getByText('model-11')).toBeVisible()
+
+      view.rerender(<TableFixture prices={refreshedPrices} />)
+
+      expect(await screen.findByText(expected)).toBeVisible()
+      expect(
+        screen.getByRole('button', { name: 'Go to previous page' })
+      ).toBeDisabled()
+    }
+  )
 
   it('replaces the selected pricing bundle without mixing legacy fields into expressions', () => {
     const options = pricingOptions({
@@ -1180,15 +1284,13 @@ it('disables both batch shortcuts when the configured exchange rate becomes inva
     })
   )
   await act(async () =>
-    useSystemConfigStore
-      .getState()
-      .setConfig({
-        currency: {
-          ...DEFAULT_CURRENCY_CONFIG,
-          quotaDisplayType: 'CNY',
-          usdExchangeRate: 0,
-        },
-      })
+    useSystemConfigStore.getState().setConfig({
+      currency: {
+        ...DEFAULT_CURRENCY_CONFIG,
+        quotaDisplayType: 'CNY',
+        usdExchangeRate: 0,
+      },
+    })
   )
   expect(
     screen.getByRole('button', { name: /Multiply by exchange rate/ })
